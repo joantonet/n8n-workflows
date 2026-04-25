@@ -1,0 +1,191 @@
+{
+  "id": "audiobook-openai-tts-2038",
+  "name": "Audiobook TTS (OpenAI low-cost)",
+  "nodes": [
+    {
+      "id": "manual-trigger-audio",
+      "name": "When clicking \"Execute Workflow\"",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        320
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "set-audiobook-input",
+      "name": "Set audiobook text and settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [
+        500,
+        320
+      ],
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "{\n  \"book_title\": \"Sample Audiobook\",\n  \"voice\": \"alloy\",\n  \"model\": \"gpt-4o-mini-tts\",\n  \"max_chars_per_part\": 3500,\n  \"book_text\": \"Chapter 1: Add your content here.\\n\\nReplace this full text with your book or chapter content. The workflow splits long text into multiple parts and generates one MP3 per part.\"\n}"
+      }
+    },
+    {
+      "id": "split-text-parts",
+      "name": "Split text into audiobook parts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        320
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const source = $input.first().json;\nconst maxChars = Number(source.max_chars_per_part || 3500);\nconst rawText = String(source.book_text || '').trim();\n\nif (!rawText) {\n  throw new Error('book_text is empty. Add text in the Set node first.');\n}\n\nconst paragraphs = rawText.split(/\\n\\s*\\n/).map((p) => p.trim()).filter(Boolean);\nconst chunks = [];\nlet current = '';\n\nfor (const paragraph of paragraphs) {\n  const candidate = current ? `${current}\\n\\n${paragraph}` : paragraph;\n  if (candidate.length <= maxChars) {\n    current = candidate;\n  } else {\n    if (current) chunks.push(current);\n    if (paragraph.length <= maxChars) {\n      current = paragraph;\n    } else {\n      for (let i = 0; i < paragraph.length; i += maxChars) {\n        chunks.push(paragraph.slice(i, i + maxChars));\n      }\n      current = '';\n    }\n  }\n}\nif (current) chunks.push(current);\n\nreturn chunks.map((text, index) => ({\n  json: {\n    book_title: source.book_title || 'audiobook',\n    model: source.model || 'gpt-4o-mini-tts',\n    voice: source.voice || 'alloy',\n    part_number: index + 1,\n    output_filename: `${(source.book_title || 'audiobook').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-part-${String(index + 1).padStart(2, '0')}.mp3`,\n    input_text: text\n  }\n}));"
+      }
+    },
+    {
+      "id": "openai-tts-request",
+      "name": "Generate MP3 with OpenAI TTS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1060,
+        320
+      ],
+      "parameters": {
+        "url": "https://api.openai.com/v1/audio/speech",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.OPENAI_API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": $json.model,\n  \"voice\": $json.voice,\n  \"response_format\": \"mp3\",\n  \"input\": $json.input_text\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "audio"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "set-file-name",
+      "name": "Attach file name to binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        320
+      ],
+      "parameters": {
+        "jsCode": "for (const item of $input.all()) {\n  if (!item.binary?.audio) {\n    throw new Error('No audio binary was returned from OpenAI.');\n  }\n  item.binary.audio.fileName = item.json.output_filename;\n  item.binary.audio.mimeType = 'audio/mpeg';\n}\nreturn $input.all();"
+      }
+    },
+    {
+      "id": "write-audio-file",
+      "name": "Write each audiobook part to disk",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1580,
+        320
+      ],
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/tmp/{{$binary.audio.fileName}}",
+        "dataPropertyName": "audio"
+      }
+    },
+    {
+      "id": "sticky-note-guide",
+      "name": "How to use",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        460,
+        80
+      ],
+      "parameters": {
+        "width": 650,
+        "height": 190,
+        "content": "## Audiobook TTS (OpenAI)\\n1) Add your full book/chapter text in **Set audiobook text and settings**.\\n2) Keep `gpt-4o-mini-tts` for lowest OpenAI cost (often usable with trial credits).\\n3) Execute workflow.\\n4) MP3 parts are written to `/tmp` as `your-title-part-01.mp3`, `part-02.mp3`, etc."
+      }
+    }
+  ],
+  "connections": {
+    "manual-trigger-audio": {
+      "main": [
+        [
+          {
+            "node": "set-audiobook-input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "set-audiobook-input": {
+      "main": [
+        [
+          {
+            "node": "split-text-parts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "split-text-parts": {
+      "main": [
+        [
+          {
+            "node": "openai-tts-request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "openai-tts-request": {
+      "main": [
+        [
+          {
+            "node": "set-file-name",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "set-file-name": {
+      "main": [
+        [
+          {
+            "node": "write-audio-file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "pinData": {},
+  "tags": [
+    "openai",
+    "tts",
+    "audiobook",
+    "audio"
+  ],
+  "versionId": "1"
+}
